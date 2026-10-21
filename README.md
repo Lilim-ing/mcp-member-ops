@@ -1,6 +1,6 @@
 # mcp-member-ops
 
-**会员运营 MCP 服务** —— 把会员数据能力暴露给 AI 客户端，同时管住三件事：谁能调、能看到什么、调用过什么。
+会员运营 MCP 服务。把会员数据能力暴露给 AI 客户端，同时限制三件事：谁能调、能看到什么、调用过什么。
 
 ```bash
 pip install -e ".[dev]"
@@ -11,44 +11,44 @@ MCPOPS_ROLE=analyst mcpops serve
 
 ---
 
-## 三类原语
+## 原语
 
-**Tools（4 个）**
+Tools（4 个）
 
 | 工具 | 作用 | 返回 |
 |---|---|---|
 | `segment_summary` | 按维度汇总某月人群规模与 GMV | 聚合值，无个人信息 |
 | `list_campaigns` | 历史活动、渠道、优惠力度 | 公开配置 |
-| `get_member_profile` | 单个会员画像与近 90 天消费 | **脱敏后**的明细 |
+| `get_member_profile` | 单个会员画像与近 90 天消费 | 脱敏后的明细 |
 | `create_campaign_task` | 创建活动执行任务 | 写入任务日志 |
 
-**Resources（2 个）**
+Resources（2 个）
 
-- `mcpops://segments` —— 五个人群的标准口径（high_value / at_risk / new / dormant / reactivated）
-- `mcpops://schema` —— 可用表与字段，明确标注 phone 与 id_card 只返回脱敏值
+- `mcpops://segments`：五个人群的标准口径（high_value / at_risk / new / dormant / reactivated）
+- `mcpops://schema`：可用表与字段，标注 phone 与 id_card 只返回脱敏值
 
-**Prompts（1 个）**
+Prompts（1 个）
 
-- `churn_review` —— 流失复盘的提问模板，强制"数字必须来自工具返回"
+- `churn_review`：流失复盘的提问模板，要求数字必须来自工具返回
 
 ---
 
-## RBAC：按能力授权，不按接口
+## 权限
 
 | 能力 | viewer | analyst | admin |
 |---|---|---|---|
-| `segment_summary` | ✅ | ✅ | ✅ |
-| `list_campaigns` | ✅ | ✅ | ✅ |
-| `get_member_profile` | ❌ | ✅ | ✅ |
-| `create_campaign_task` | ❌ | ❌ | ✅ |
+| `segment_summary` | 是 | 是 | 是 |
+| `list_campaigns` | 是 | 是 | 是 |
+| `get_member_profile` | 否 | 是 | 是 |
+| `create_campaign_task` | 否 | 否 | 是 |
 
-关键在于 `get_member_profile` 和 `segment_summary` 都是"读"，但风险差一个量级：一个返回聚合，一个返回行级明细。所以权限挂在**能力**上，而不是"读/写"上。
+`get_member_profile` 和 `segment_summary` 都是读，但一个返回行级明细，一个只返回聚合，风险不在一个量级。所以权限按具体能力授予，读/写这个维度不够用。
 
-授权检查只有一处——`Server._call_tool` 里的 `principal.require(name)`。新增传输方式也绕不过去。
+授权检查只有一处：`Server._call_tool` 里的 `principal.require(name)`。以后加新的传输方式也得走这里。
 
 ---
 
-## 脱敏在返回层
+## 脱敏
 
 ```bash
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_member_profile","arguments":{"member_id":"M000001"}}}' \
@@ -66,13 +66,13 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"g
 }
 ```
 
-`masked_columns` 是显式字段：客户端能知道"这里被处理过"，而不是以为拿到的是原值。
+`masked_columns` 是显式字段。客户端能看出这些列被处理过，不会误以为是原值。
 
 ---
 
 ## 审计
 
-每次调用一条 JSONL，成功和拒绝都记：
+每次调用记一条 JSONL，成功和拒绝都写：
 
 ```json
 {"principal": "test-viewer", "role": "viewer", "method": "tools/call",
@@ -80,7 +80,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"g
  "detail": "role 'viewer' 无权调用 get_member_profile"}
 ```
 
-拒绝记录和成功记录同样重要——只看成功日志，等于不知道谁在试探边界。
+拒绝也要记。只留成功日志的话，越权尝试就查不到了。
 
 ---
 
@@ -93,17 +93,17 @@ python -m pytest    # 18 passed
 | 用例 | 结果 |
 |---|---|
 | `initialize` | 返回 protocolVersion 与三类 capabilities |
-| viewer 调 `segment_summary` | ✅ 返回聚合 |
-| viewer 调 `get_member_profile` | ❌ `-32001 role 'viewer' 无权调用` |
-| analyst 调 `get_member_profile` | ✅ 脱敏值 |
-| analyst 调 `create_campaign_task` | ❌ `-32001` |
-| admin 调 `create_campaign_task` | ✅ 写入任务日志 |
-| 调 `drop_table` | ❌ `-32602 unknown tool` |
-| 调不存在的方法 | ❌ `-32601 method not found` |
-| 读 `mcpops://secrets` | ❌ `-32602 unknown resource` |
+| viewer 调 `segment_summary` | 通过，返回聚合 |
+| viewer 调 `get_member_profile` | 拒绝，`-32001 role 'viewer' 无权调用` |
+| analyst 调 `get_member_profile` | 通过，脱敏值 |
+| analyst 调 `create_campaign_task` | 拒绝，`-32001` |
+| admin 调 `create_campaign_task` | 通过，写入任务日志 |
+| 调 `drop_table` | 拒绝，`-32602 unknown tool` |
+| 调不存在的方法 | 拒绝，`-32601 method not found` |
+| 读 `mcpops://secrets` | 拒绝，`-32602 unknown resource` |
 | 发 `notifications/initialized` | 无响应（JSON-RPC 通知规范） |
-| `get_member_profile` 缺 `member_id` | ❌ `-32602 invalid params` |
-| `create_campaign_task` 的 `budget_cny` 传字符串 | ❌ `-32602 invalid params` |
+| `get_member_profile` 缺 `member_id` | 拒绝，`-32602 invalid params` |
+| `create_campaign_task` 的 `budget_cny` 传字符串 | 拒绝，`-32602 invalid params` |
 
 ---
 
@@ -126,14 +126,11 @@ python -m pytest
 
 ## 设计取舍
 
-**为什么手写 JSON-RPC 而不装 MCP SDK？**
-SDK 会更省事，但也会把授权点推进框架的调用链里。这个项目要演示的是"权限必须只有一个闸门"，所以在 `dispatch` 里显式写一遍更清楚。协议本身只有 6 个方法，没有复杂到必须用库。
+手写 JSON-RPC 而不用 MCP SDK，是因为 SDK 会把授权点埋进框架的调用链里。这里想说明权限只能有一个入口，所以在 `dispatch` 里显式写一遍更直观。协议本身只有 6 个方法，用库的必要性不大。
 
-**为什么角色从环境变量读，不做 OAuth？**
-OAuth 是部署问题，不是设计问题。演示需要的是"权限模型清楚"，而不是"登录流程完整"。真实部署应该由网关签发 token，服务端只信任网关传入的角色。
+角色从环境变量读，不做 OAuth，是因为 OAuth 属于部署环节。这里想讲清楚权限模型，登录流程不是重点。真实部署应该由网关签发 token，服务端只信任网关传入的角色。
 
-**为什么任务写入单独文件，不写数据库？**
-服务对仓库应当只读。写操作落在独立的 append-only 日志里，既留下痕迹，又不给服务一个能改主数据的连接。
+任务写入放在单独文件里，是因为服务对仓库应当只读。写操作落到独立的 append-only 日志，既留下痕迹，也不用给服务一个能改主数据的连接。
 
 ---
 
